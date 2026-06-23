@@ -85,7 +85,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub" id="rangelbl"></div>
   <div class="controls">
     <div class="group">
-      <button id="m-rev" class="active">Apgrozījums (€)</button>
+      <button id="m-rev" class="active">Ieņēmumi (€)</button>
       <button id="m-cnt">Pasūtījumi</button>
     </div>
     <div class="group">
