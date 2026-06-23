@@ -342,6 +342,12 @@ PAGE = r"""<!DOCTYPE html>
   table.stock td:first-child{text-align:left}
   .rem-ok{color:#10b981}.rem-low{color:#f59e0b}.rem-out{color:#ef4444;font-weight:600}table.stock .cap{color:#5b616b}
   .note{color:#6b7280;font-size:12px}
+  .hero{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .hcard{flex:1 1 150px;min-width:140px;background:#171a21;border:1px solid #232733;border-top:3px solid;border-radius:14px;padding:14px 16px}
+  .hlabel{font-size:13px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hbig{font-size:30px;font-weight:800;letter-spacing:-1px;line-height:1}
+  .hsub{font-size:12px;color:#9aa0a6;margin-top:4px}
+  @media(max-width:560px){.hbig{font-size:24px}.hcard{flex:1 1 120px;min-width:110px}}
   .tabs{display:flex;gap:4px;margin:8px 0 16px;border-bottom:1px solid #232733}
   .tabs button{border-radius:8px 8px 0 0;padding:11px 18px;color:#9aa0a6;font-size:14px}
   .tabs button.active{color:#fff;border-bottom:2px solid #2563eb}
@@ -365,9 +371,9 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <section id="t-sales" class="tab show">
-  <h2 style="font-size:16px;margin:0 0 10px" id="todayhead">Šodienas pārdošana</h2>
-  <div class="grid" id="today"></div>
-  <div class="bar" style="margin-top:20px">
+  <h2 style="font-size:16px;margin:0 0 12px" id="herohead">Šodien</h2>
+  <div class="hero" id="hero"></div>
+  <div class="bar">
     <div class="group"><button id="m-rev" class="active">Apgrozījums (€)</button><button id="m-cnt">Pasūtījumi</button></div>
     <div class="group"><button id="g-day" class="active">Dienas</button><button id="g-week">Nedēļas</button></div>
     <select id="rangesel">
@@ -379,6 +385,8 @@ PAGE = r"""<!DOCTYPE html>
     </select>
   </div>
   <div class="card"><div class="wrap"><canvas id="chart"></canvas></div></div>
+  <h2 style="font-size:15px;margin:6px 0 10px;color:#9aa0a6" id="todayhead">Šodien — detalizēti</h2>
+  <div class="grid" id="today"></div>
 </section>
 
 <section id="t-day" class="tab">
@@ -409,7 +417,7 @@ async function load(){
   updateRefreshUI();
   if(DATA.empty){ $("sub").textContent="Nav datu — nospied “Atjaunot datus”."; maybeAuto(); return; }
   $("sub").textContent=`Periods: ${DATA.range[0]} — ${DATA.range[1]}  ·  ${DATA.series.length} automāti  ·  kopā €${DATA.total_revenue.toLocaleString("lv-LV")}`;
-  renderToday(); try{ draw(); }catch(e){}
+  renderHero(); renderToday(); try{ draw(); }catch(e){}
   maybeAuto();
 }
 function maybeAuto(){ if(DATA && DATA.stale && !autoTried && !refreshing){ autoTried=true; startRefresh(); } }
@@ -453,8 +461,21 @@ function draw(){
     scales:{x:{ticks:{color:"#9aa0a6",maxTicksLimit:14,maxRotation:0},grid:{color:"#1f2430"}},
       y:{ticks:{color:"#9aa0a6",callback:v=>metric==="rev"?"€"+v:v},grid:{color:"#1f2430"},beginAtZero:true}}}});
 }
+function renderHero(){
+  const el=$("hero"); el.innerHTML="";
+  $("herohead").textContent="Šodien · "+(DATA.today.date||"");
+  const tmap={}; (DATA.today.machines||[]).forEach(m=>tmap[m.label]=m);
+  DATA.series.forEach((s,i)=>{
+    const t=tmap[s.label]||{qty:0,rev:0}, c=COLORS[i%5];
+    el.insertAdjacentHTML("beforeend",
+      `<div class="hcard" style="border-top-color:${c}">
+         <div class="hlabel" style="color:${c}">${s.label}</div>
+         <div class="hbig">€${(t.rev||0).toFixed(2)}</div>
+         <div class="hsub">${t.qty||0} gab.</div></div>`);
+  });
+}
 function renderToday(){
-  const t=DATA.today; $("todayhead").textContent="Pārdošana "+(t.date||"");
+  const t=DATA.today; $("todayhead").textContent="Šodien — detalizēti ("+(t.date||"")+")";
   const el=$("today"); el.innerHTML="";
   if(!t.machines.length){el.innerHTML="<p class='note'>Šajā dienā vēl nav pārdošanas.</p>";return;}
   t.machines.forEach((m,i)=>{
