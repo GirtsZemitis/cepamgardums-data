@@ -75,12 +75,14 @@ TEMPLATE = r"""<!DOCTYPE html>
   .daynav button:disabled{opacity:.35}
   #daylabel{font-size:15px;font-weight:600;min-width:120px;text-align:center}
   #dtoday{margin-left:auto;font-size:13px}
-  .hero{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-  .hcard{flex:1 1 150px;min-width:140px;background:#171a21;border:1px solid #232733;border-top:3px solid;border-radius:14px;padding:14px 16px}
+  .hero{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;margin-bottom:18px}
+  .hcard{flex:1 1 160px;min-width:150px;background:#171a21;border:1px solid #232733;border-top:3px solid;border-radius:14px;padding:14px 16px;cursor:pointer}
   .hlabel{font-size:13px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hbig{font-size:30px;font-weight:800;letter-spacing:-1px;line-height:1}
-  .hsub{font-size:12px;color:#9aa0a6;margin-top:4px}
-  @media(max-width:560px){.hbig{font-size:24px}.hcard{flex:1 1 120px;min-width:110px}}
+  .hsub{font-size:12px;color:#9aa0a6;margin-top:4px;display:flex;justify-content:space-between;align-items:center}
+  .chev{transition:transform .15s;color:#9aa0a6}.hcard.open .chev{transform:rotate(180deg)}
+  .hdetail{display:none;margin-top:10px;border-top:1px solid #232733;padding-top:6px}.hcard.open .hdetail{display:block}
+  @media(max-width:560px){.hbig{font-size:24px}.hcard{flex:1 1 140px;min-width:130px}}
   .tabs{display:flex;gap:4px;margin:8px 0 16px;border-bottom:1px solid #232733}
   .tabs button{border-radius:8px 8px 0 0;padding:11px 18px;color:#9aa0a6;font-size:14px}
   .tabs button.active{color:#fff;border-bottom:2px solid #2563eb}
@@ -105,8 +107,6 @@ TEMPLATE = r"""<!DOCTYPE html>
     <button id="dtoday">Šodien</button>
   </div>
   <div class="hero" id="hero"></div>
-  <h2 style="font-size:14px;margin:4px 0 10px;color:#9aa0a6" id="todayhead">Pārdots pa produktiem</h2>
-  <div class="grid" id="today"></div>
   <div class="bar" style="margin-top:20px">
     <div class="group"><button id="m-rev" class="active">Ieņēmumi (€)</button><button id="m-cnt">Pasūtījumi</button></div>
     <div class="group"><button id="g-day" class="active">Dienas</button><button id="g-week">Nedēļas</button></div>
@@ -148,34 +148,28 @@ function load(){
   $("sub").textContent=`Periods: ${DATA.range[0]} — ${DATA.range[1]}  ·  ${DATA.series.length} automāti  ·  kopā €${DATA.total_revenue.toLocaleString("lv-LV")}`;
   setDay(DATA.dates.length-1); try{draw();}catch(e){}
 }
-function renderHero(idx){
-  const el=$("hero"); el.innerHTML="";
-  DATA.series.forEach((s,i)=>{
-    const c=COLORS[i%5]; colorByLabel[s.label]=c;
-    const rev=s.rev[idx]||0, qty=s.cnt[idx]||0;
-    el.insertAdjacentHTML("beforeend",
-      `<div class="hcard" style="border-top-color:${c}"><div class="hlabel" style="color:${c}">${s.label}</div>
-       <div class="hbig">€${rev.toFixed(2)}</div><div class="hsub">${qty} gab.</div></div>`);
-  });
-}
-function renderDetail(idx){
-  const el=$("today"), dd=(DAYS[DATA.dates[idx]]||{machines:[]});
+function renderDay(idx){
+  const dd=(DAYS[DATA.dates[idx]]||{machines:[]});
   const dmap={}; dd.machines.forEach(m=>dmap[m.label]=m);
-  el.innerHTML="";
-  DATA.series.forEach((s,i)=>{                       // a card for EVERY machine, empty if 0 sold
+  const el=$("hero"); el.innerHTML="";
+  DATA.series.forEach((s,i)=>{                        // a card per machine; tap to expand its products
     const c=COLORS[i%5], m=dmap[s.label]||{qty:0,rev:0,products:[]};
     const rows=m.products.length
       ? m.products.map(p=>`<div class="row"><span>${p.name}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("")
       : `<div class="row"><span class="q">— nav pārdošanas —</span></div>`;
-    el.insertAdjacentHTML("beforeend",`<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${s.label}</h3>
-      <div class="tot" style="color:${c}">${m.qty} gab. · €${m.rev.toFixed(2)}</div>${rows}</div>`);});
+    el.insertAdjacentHTML("beforeend",
+      `<div class="hcard" style="border-top-color:${c}"><div class="hlabel" style="color:${c}">${s.label}</div>
+       <div class="hbig">€${(m.rev||0).toFixed(2)}</div>
+       <div class="hsub"><span>${m.qty||0} gab.</span><span class="chev">▾</span></div>
+       <div class="hdetail">${rows}</div></div>`);
+  });
 }
 function setDay(idx){
   const last=DATA.dates.length-1;
   dayIdx=Math.max(0,Math.min(idx,last));
   $("daylabel").textContent=DATA.dates[dayIdx]+(dayIdx===last?" · šodien":"");
   $("dprev").disabled=dayIdx<=0; $("dnext").disabled=dayIdx>=last; $("dtoday").disabled=dayIdx===last;
-  renderHero(dayIdx); renderDetail(dayIdx);
+  renderDay(dayIdx);
 }
 function activeData(){
   const n=Math.min(rangeDays, DATA.dates.length), start=Math.max(0,DATA.dates.length-n);
@@ -231,6 +225,7 @@ $("rangesel").onchange=e=>{rangeDays=parseInt(e.target.value);draw();};
 $("dprev").onclick=()=>setDay(dayIdx-1);
 $("dnext").onclick=()=>setDay(dayIdx+1);
 $("dtoday").onclick=()=>setDay(DATA.dates.length-1);
+$("hero").onclick=e=>{const card=e.target.closest(".hcard"); if(card)card.classList.toggle("open");};
 $("hourdate").onchange=drawHourly;
 $("h-cnt").onclick=()=>{hmetric="cnt";setA("h-cnt","h-rev");drawHourly();};
 $("h-rev").onclick=()=>{hmetric="rev";setA("h-rev","h-cnt");drawHourly();};
