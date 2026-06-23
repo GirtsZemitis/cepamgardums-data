@@ -4,9 +4,10 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY . /app
 
-# Azure Container Apps: set ingress targetPort to this value.
-ENV PORT=8000
-EXPOSE 8000
+# Listen on 80 (Azure Container Apps convention). app.py honors $PORT, so if the
+# platform injects a different PORT it follows that too. Set ingress targetPort = 80.
+ENV PORT=80
+EXPOSE 80
 
 # Optional env (set in Azure):
 #   XYNET_ACCOUNT, XYNET_INNER (or XYNET_PASSWORD)  -> enables auto-login / Refresh

@@ -31,7 +31,7 @@ A local web app with the chart + today's per-machine/product sales + a Refresh b
 ## Deploy to Azure Container Apps
 The repo includes a `Dockerfile` (runtime is pure Python stdlib — no pip deps). In Azure,
 create a Container App from this repo and let it build the Dockerfile. Set ingress
-**targetPort = 8000** (matches the Dockerfile's `EXPOSE`/`PORT`).
+**targetPort = 80** (matches the Dockerfile's `EXPOSE`/`PORT`).
 
 Environment variables to set in Azure:
 
@@ -43,7 +43,7 @@ Environment variables to set in Azure:
 | `DASH_PASSWORD` | **password-protect the dashboard** (set this — the URL is public!) | `choose-a-strong-one` |
 | `DASH_USER` | dashboard username (optional, default `admin`) | `girts` |
 | `AUTO_REFRESH` | `1` = pull fresh data on startup | `1` |
-| `PORT` | listen port (default 8000; keep in sync with targetPort) | `8000` |
+| `PORT` | listen port (default 80; keep in sync with targetPort) | `80` |
 
 Notes:
 - The committed `orders.db`/`api_cache.json` give the container data immediately; with
