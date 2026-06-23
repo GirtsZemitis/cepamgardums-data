@@ -59,7 +59,9 @@ def _secs_since_refresh():
         return None
     try:
         t = datetime.datetime.fromisoformat(STATE["last_refresh"])
-        return (datetime.datetime.now() - t).total_seconds()
+        if t.tzinfo is None:                       # older/naive value -> assume UTC
+            t = t.replace(tzinfo=datetime.timezone.utc)
+        return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
     except Exception:
         return None
 
@@ -214,7 +216,7 @@ def perform_refresh(emit=lambda e: None, force=False):
         summary = api_client.run_fetch(token, log=log)
         emit({"step": "stock", "msg": "📦 Atjaunoju atlikumu…"})
         STATE["stock"] = compute_stock()
-        STATE["last_refresh"] = datetime.datetime.now().isoformat(timespec="seconds")
+        STATE["last_refresh"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         _save_state()
         emit({"done": True, "summary": summary, "last_refresh": STATE["last_refresh"],
               "msg": f"✅ Pabeigts · {summary['new_orders']} jauni pasūtījumi · €{summary['shipped_revenue']}"})
