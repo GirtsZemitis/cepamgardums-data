@@ -427,6 +427,14 @@ PAGE = r"""<!DOCTYPE html>
 
 <script>
 const COLORS=["#3b82f6","#ef4444","#10b981","#f59e0b","#a855f7"];
+const NAME_MAP={
+  "1 KG Cāļu fileja MAIGUMIŅŠ":"MAIGUMIŅŠ",
+  "1KG Cūkas šašliks TRADICIONĀLAIS":"TRADICIONĀLAIS",
+  "1KG Cūkas šašliks GRUZĪNU":"GRUZĪNU",
+  "1KG Vistas Giross-Atkauloti cāļu šķiņķīši":"ŠĶIŅĶĪŠI",
+  "1KG Fermentēti dārzeņi korejiešu kimčī KĀPOSTIŅŠ":"KĀPOSTIŅŠ"
+};
+const shortName=n=>NAME_MAP[n]||n;   // fall back to full name if not mapped
 const $=id=>document.getElementById(id);
 let DATA=null, metric="rev", gran="day", rangeDays=21, chart=null, dayIdx=0;
 const colorByLabel={};
@@ -490,7 +498,7 @@ function renderDay(dd){
   DATA.series.forEach((s,i)=>{                        // a card per machine; tap to expand its products
     const c=COLORS[i%5], m=dmap[s.label]||{qty:0,rev:0,products:[]};
     const rows=m.products.length
-      ? m.products.map(p=>`<div class="row"><span>${p.name}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("")
+      ? m.products.map(p=>`<div class="row"><span>${shortName(p.name)}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("")
       : `<div class="row"><span class="q">— nav pārdošanas —</span></div>`;
     el.insertAdjacentHTML("beforeend",
       `<div class="hcard" style="border-top-color:${c}">
