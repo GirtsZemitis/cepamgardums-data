@@ -354,10 +354,12 @@ PAGE = r"""<!DOCTYPE html>
   .rem-ok{color:#10b981}.rem-low{color:#f59e0b}.rem-out{color:#ef4444;font-weight:600}table.stock .cap{color:#5b616b}
   .note{color:#6b7280;font-size:12px}
   .daynav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-  .daynav button{background:#11141a;border:1px solid #232733;color:#e8eaed;border-radius:10px;padding:9px 15px;font-size:16px;min-width:46px}
-  .daynav button:disabled{opacity:.35}
-  #daylabel{font-size:15px;font-weight:600;min-width:120px;text-align:center}
-  #dtoday{margin-left:auto;font-size:13px}
+  .daynav button{background:#1b2330;border:1px solid #2b3447;color:#e8eaed;border-radius:12px}
+  #dprev,#dnext{font-size:26px;padding:6px 22px;min-width:64px;line-height:1.1}
+  .daynav button:active{background:#2563eb}
+  .daynav button:disabled{opacity:.3}
+  #daylabel{font-size:15px;font-weight:600;min-width:110px;text-align:center}
+  #dtoday{margin-left:auto;font-size:13px;padding:11px 16px}
   .hero{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;margin-bottom:18px}
   .hcard{flex:1 1 160px;min-width:150px;background:#171a21;border:1px solid #232733;border-top:3px solid;border-radius:14px;padding:14px 16px;cursor:pointer}
   .hlabel{font-size:13px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
