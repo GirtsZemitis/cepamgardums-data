@@ -202,7 +202,7 @@ def perform_refresh(emit=lambda e: None, force=False):
         emit({"step": "login", "msg": "🔐 Pieslēdzos Gaļas Nams sistēmai…"})
         token = auth.login() if auth.have_creds() else auth.get_token()
         emit({"step": "login_ok", "msg": "✓ Pieslēgšanās izdevās"})
-        emit({"step": "api", "msg": "📡 Pieprasu pasūtījumus no API…"})
+        emit({"step": "api", "msg": "📡 Pieprasu pasūtījumus no Xynet…"})
 
         def log(m):
             m = m.strip()
