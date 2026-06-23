@@ -8,3 +8,4 @@ __pycache__/
 .venv*/
 sales-report.html
 machine-sales.html
+state.json

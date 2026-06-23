@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Server runtime state (cached stock + last-refresh time)
+state.json

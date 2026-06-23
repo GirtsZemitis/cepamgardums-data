@@ -282,13 +282,13 @@ def run_fetch(auth=None, since=None, today=None, log=print):
     Token resolution: explicit `auth` token > automated login via stored creds >
     cached .token file. since/today are date or 'YYYY-MM-DD' strings.
     """
-    # Resolve a token: explicit arg > fresh login (if creds) > cached .token.
-    if auth_mod.have_creds():
-        token = auth_mod.login()           # always start with a fresh token
-    elif not auth:
-        token = auth_mod.get_token()       # cached .token or error
-    else:
+    # Resolve a token: explicit arg (caller already logged in) > fresh login > cached.
+    if auth:
         token = auth
+    elif auth_mod.have_creds():
+        token = auth_mod.login()
+    else:
+        token = auth_mod.get_token()
     tok = [token]
 
     if isinstance(today, str):
@@ -320,6 +320,7 @@ def run_fetch(auth=None, since=None, today=None, log=print):
         orders.update(got)
         log(f"  {s} … {e}: +{len(got)} rows (cache={len(orders)})")
 
+    log("Rebuilding sales book…")
     cache["orders"] = orders
     cache["fetched_through"] = today.isoformat()
     with open(CACHE, "w") as f:

@@ -1,45 +1,76 @@
 #!/usr/bin/env python3
-"""Local sales dashboard for the vending machines.
+"""Sales dashboard for the vending machines (local + Azure). Pure Python stdlib.
 
-Run it:
-    ../.venv_orders/bin/python app.py
-then open http://localhost:8765 in your browser.
+Page loads read only the local cache (orders.db + in-memory STATE) — they never hit
+the vending API. The API is touched only by a refresh, which is rate-limited to once
+per REFRESH_MIN_INTERVAL and serialized by a lock, so we never hammer it.
 
-Serves one page: the per-machine sales chart + today's breakdown, with a Refresh
-button that pulls the latest data from the API (paste your Authorization token once;
-it's saved to a local, git-ignored .token file so you don't re-paste each time).
-
-Pure standard library — no web framework needed.
+Run:  ../.venv_orders/bin/python app.py   then open http://localhost:8765
+Env:  PORT, DASH_USER/DASH_PASSWORD (auth gate), AUTO_REFRESH=1, XYNET_* (see auth.py)
 """
 import base64
 import datetime
 import json
 import os
+import re
 import socket
 import sqlite3
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import api_client  # run_fetch(), same folder
+import api_client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(HERE, "orders.db")
 TOKEN_FILE = os.path.join(HERE, ".token")
-PORT = int(os.environ.get("PORT", "8765"))      # Azure/Container Apps: set targetPort to match
-# Optional password gate (recommended when deployed publicly): set DASH_PASSWORD.
+STATE_FILE = os.path.join(HERE, "state.json")
+PORT = int(os.environ.get("PORT", "8765"))
 DASH_USER = os.environ.get("DASH_USER", "admin")
 DASH_PASSWORD = os.environ.get("DASH_PASSWORD")
+REFRESH_MIN_INTERVAL = 300        # seconds: don't refresh (hit the API) more often than this
+
+_refresh_lock = threading.Lock()
+STATE = {"last_refresh": None, "stock": None}   # in-memory cache, persisted to STATE_FILE
+
+
+def _load_state():
+    global STATE
+    if os.path.exists(STATE_FILE):
+        try:
+            STATE = json.load(open(STATE_FILE))
+        except Exception:
+            pass
+    STATE.setdefault("last_refresh", None)
+    STATE.setdefault("stock", None)
+
+
+def _save_state():
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(STATE, f)
+    except Exception:
+        pass
+
+
+def _secs_since_refresh():
+    if not STATE.get("last_refresh"):
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(STATE["last_refresh"])
+        return (datetime.datetime.now() - t).total_seconds()
+    except Exception:
+        return None
 
 
 # ----------------------------- data assembly --------------------------------
 def read_data():
-    """Build the JSON payload the page renders: chart series + today breakdown."""
+    secs = _secs_since_refresh()
+    stale = (secs is None) or (secs > REFRESH_MIN_INTERVAL)
     if not os.path.exists(DB):
-        return {"empty": True}
+        return {"empty": True, "last_refresh": STATE.get("last_refresh"), "stale": stale}
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
-
     drows = con.execute("""
         SELECT order_date, machine_code, location,
                ROUND(SUM(price_eur),2) rev, COUNT(*) cnt
@@ -47,7 +78,6 @@ def read_data():
         GROUP BY order_date, machine_code""").fetchall()
     machines = [dict(r) for r in con.execute(
         "SELECT machine_code, location FROM machines ORDER BY machine_code")]
-
     dmin = min((r["order_date"] for r in drows), default=None)
     dmax = max((r["order_date"] for r in drows), default=None)
 
@@ -69,7 +99,6 @@ def read_data():
                 "cnt": [idx[(d, mc)]["cnt"] if (d, mc) in idx else 0 for d in dates],
             })
 
-    # today's (latest day) per-machine, per-product breakdown
     day = dmax
     trows = con.execute("""
         SELECT machine_code, location, product_name,
@@ -88,17 +117,15 @@ def read_data():
 
     total_rev = round(sum(r["rev"] for r in drows), 2)
     con.close()
-    meta = json.load(open(api_client.CACHE)).get("fetched_through") \
-        if os.path.exists(api_client.CACHE) else None
     return {
         "dates": dates, "series": series, "range": [dmin, dmax],
         "today": {"date": day, "machines": list(tmap.values())},
-        "total_revenue": total_rev, "fetched_through": meta,
+        "total_revenue": total_rev,
+        "last_refresh": STATE.get("last_refresh"), "stale": stale,
     }
 
 
 def read_hourly():
-    """Per-day hourly breakdown (orders + revenue), 24 buckets per day."""
     if not os.path.exists(DB):
         return {"dates": [], "orders": {}, "revenue": {}}
     con = sqlite3.connect(DB)
@@ -121,9 +148,9 @@ def read_hourly():
     return {"dates": dates, "orders": orders, "revenue": revenue}
 
 
-def stock_with_sales():
-    """Live current stock (from the stock API) + real units sold in the last 7 days
-    (from the order book) per machine & product."""
+def compute_stock():
+    """Live per-machine stock + units sold in the last 7 days (from the order book).
+    Only called during a refresh — the result is cached in STATE['stock']."""
     inv = api_client.fetch_inventory()
     sold = {}
     if os.path.exists(DB):
@@ -143,6 +170,53 @@ def stock_with_sales():
     return inv
 
 
+def perform_refresh(emit=lambda e: None, force=False):
+    """Refresh orders + stock from the API, streaming step events to `emit`.
+    Rate-limited (unless force) and serialized so we never hammer the API."""
+    secs = _secs_since_refresh()
+    if not force and secs is not None and secs < REFRESH_MIN_INTERVAL and STATE.get("stock"):
+        mins = int(secs // 60)
+        emit({"done": True, "throttled": True,
+              "msg": f"ℹ️ Dati jau svaigi (atjaunoti pirms {mins} min). Mēģini vēlāk.",
+              "last_refresh": STATE.get("last_refresh")})
+        return {"throttled": True}
+    if not _refresh_lock.acquire(blocking=False):
+        emit({"done": True, "busy": True, "msg": "⏳ Atjaunošana jau notiek…"})
+        return {"busy": True}
+    try:
+        import auth
+        if not auth.have_creds() and not os.path.exists(TOKEN_FILE):
+            emit({"error": "Nav pieejas (nav konta/tokena)."})
+            return {"error": "no creds"}
+        emit({"step": "login", "msg": "🔐 Pieslēdzos Gaļas Nams sistēmai…"})
+        token = auth.login() if auth.have_creds() else auth.get_token()
+        emit({"step": "login_ok", "msg": "✓ Pieslēgšanās izdevās"})
+        emit({"step": "api", "msg": "📡 Pieprasu pasūtījumus no API…"})
+
+        def log(m):
+            m = m.strip()
+            mm = re.match(r"(\S+) … (\S+): \+(\d+)", m)
+            if mm:
+                emit({"step": "recv",
+                      "msg": f"⬇️ Saņemu {mm.group(1)} – {mm.group(2)}  (+{mm.group(3)} pasūtījumi)"})
+            elif m.startswith("Rebuilding"):
+                emit({"step": "save", "msg": "💾 Saglabāju pasūtījumus…"})
+
+        summary = api_client.run_fetch(token, log=log)
+        emit({"step": "stock", "msg": "📦 Atjaunoju atlikumu…"})
+        STATE["stock"] = compute_stock()
+        STATE["last_refresh"] = datetime.datetime.now().isoformat(timespec="seconds")
+        _save_state()
+        emit({"done": True, "summary": summary, "last_refresh": STATE["last_refresh"],
+              "msg": f"✅ Pabeigts · {summary['new_orders']} jauni pasūtījumi · €{summary['shipped_revenue']}"})
+        return summary
+    except Exception as e:
+        emit({"error": str(e)})
+        return {"error": str(e)}
+    finally:
+        _refresh_lock.release()
+
+
 # ------------------------------- http server --------------------------------
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body, ctype="application/json", code=200):
@@ -156,10 +230,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, *a):
-        pass  # quiet
+        pass
 
     def _authed(self):
-        """If DASH_PASSWORD is set, require HTTP Basic auth. Otherwise open."""
         if not DASH_PASSWORD:
             return True
         hdr = self.headers.get("Authorization", "")
@@ -176,6 +249,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return False
 
+    def _sse(self, obj):
+        self.wfile.write(("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode())
+        self.wfile.flush()
+
+    def _refresh_stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            perform_refresh(emit=self._sse, force=False)
+        except Exception as e:
+            try:
+                self._sse({"error": str(e)})
+            except Exception:
+                pass
+
     def do_GET(self):
         if not self._authed():
             return
@@ -183,37 +274,38 @@ class Handler(BaseHTTPRequestHandler):
             self._send(PAGE, "text/html")
         elif self.path == "/api/data":
             self._send(read_data())
-        elif self.path == "/api/stock":
-            try:
-                self._send(stock_with_sales())
-            except Exception as e:
-                self._send({"error": str(e)})
         elif self.path == "/api/hourly":
             self._send(read_hourly())
-        elif self.path == "/api/has-auth":
-            import auth
-            self._send({"autoLogin": auth.have_creds(),
-                        "hasToken": os.path.exists(TOKEN_FILE)})
+        elif self.path == "/api/stock":
+            self._send(STATE.get("stock") or {"machines": []})
+        elif self.path == "/api/refresh-stream":
+            self._refresh_stream()
         else:
             self._send({"error": "not found"}, code=404)
 
     def do_POST(self):
         if not self._authed():
             return
-        if self.path != "/api/refresh":
-            return self._send({"error": "not found"}, code=404)
-        import auth
-        length = int(self.headers.get("Content-Length", 0))
-        payload = json.loads(self.rfile.read(length) or b"{}")
-        token = (payload.get("token") or "").strip()
-        if not token and not auth.have_creds() and not os.path.exists(TOKEN_FILE):
-            return self._send({"ok": False, "error": "Nav pieejas. Saglabā kontu (auth.py --set-creds)."})
+        self._send({"error": "use /api/refresh-stream"}, code=404)
+
+
+class DualStackServer(ThreadingHTTPServer):
+    """Listen on IPv4 + IPv6 so 'localhost' works regardless of resolution."""
+    address_family = socket.AF_INET6
+    daemon_threads = True
+
+    def server_bind(self):
         try:
-            # run_fetch auto-logins via stored creds; explicit token used only if given
-            summary = api_client.run_fetch(token or None, log=lambda m: None)
-            self._send({"ok": True, "summary": summary})
-        except Exception as e:
-            self._send({"ok": False, "error": str(e)})
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError):
+            pass
+        super().server_bind()
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        print("request error:", exc)
 
 
 PAGE = r"""<!DOCTYPE html>
@@ -222,52 +314,49 @@ PAGE = r"""<!DOCTYPE html>
 <title>Gaļas Nams — pārdošanas panelis</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-  :root{color-scheme:dark}
-  *{box-sizing:border-box}
+  :root{color-scheme:dark}*{box-sizing:border-box}
   body{font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;margin:0;padding:22px;background:#0f1115;color:#e8eaed}
-  h1{font-size:20px;margin:0 0 2px}.sub{color:#9aa0a6;font-size:13px;margin-bottom:16px}
-  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+  h1{font-size:20px;margin:0 0 2px}.sub{color:#9aa0a6;font-size:13px;margin-bottom:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
   .group{display:flex;gap:4px;background:#11141a;border:1px solid #232733;border-radius:10px;padding:4px}
   button{background:transparent;color:#cbd1d8;border:none;border-radius:7px;padding:8px 13px;font-size:13px;cursor:pointer}
   button.active{background:#2563eb;color:#fff}
   .refresh{background:#10b981;color:#06281f;font-weight:600}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  select{background:#11141a;border:1px solid #232733;color:#e8eaed;border-radius:8px;padding:7px 10px;font-size:13px}
-  .spinner{display:none;width:14px;height:14px;border:2px solid #ffffff55;border-top-color:#fff;
-    border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-left:6px}
-  .spinner.on{display:inline-block}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  input{background:#11141a;border:1px solid #232733;color:#e8eaed;border-radius:8px;padding:8px 10px;font-size:13px;min-width:230px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  select{background:#11141a;border:1px solid #232733;color:#e8eaed;border-radius:8px;padding:8px 10px;font-size:13px}
+  .spinner{display:none;width:14px;height:14px;border:2px solid #ffffff55;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-left:6px}
+  .spinner.on{display:inline-block}@keyframes spin{to{transform:rotate(360deg)}}
+  .status{font-size:12px;color:#9aa0a6}.lastref{font-size:12px;color:#6b7280}
+  .rlog{display:none;font-size:12.5px;color:#cbd1d8;line-height:1.8;margin:0 0 14px;padding:10px 14px;background:#11141a;border:1px solid #232733;border-radius:10px}
   .card{background:#171a21;border:1px solid #232733;border-radius:14px;padding:16px;margin-bottom:18px}
-  .wrap{position:relative;height:54vh;min-height:320px}
+  .wrap{position:relative;height:52vh;min-height:300px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
-  .mcard{background:#171a21;border:1px solid #232733;border-radius:12px;padding:14px}
-  .mcard h3{margin:0 0 2px;font-size:14px}.mcard .tot{color:#10b981;font-size:13px;margin-bottom:8px}
+  .mcard{background:#171a21;border:1px solid #232733;border-left-width:4px;border-radius:12px;padding:14px}
+  .mcard h3{margin:0 0 2px;font-size:14px}.mcard .tot{font-size:13px;margin-bottom:8px;font-weight:600}
   .row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-top:1px solid #1f2430}
   .row .q{color:#9aa0a6}
   table.stock{width:100%;border-collapse:collapse;font-size:12.5px}
-  table.stock th{color:#9aa0a6;text-align:right;font-weight:500;padding:4px 4px;border-bottom:1px solid #232733}
+  table.stock th{color:#9aa0a6;text-align:right;font-weight:500;padding:4px;border-bottom:1px solid #232733}
   table.stock th:first-child{text-align:left}
-  table.stock td{padding:4px 4px;border-top:1px solid #1f2430;text-align:right}
+  table.stock td{padding:4px;border-top:1px solid #1f2430;text-align:right}
   table.stock td:first-child{text-align:left}
-  .rem-ok{color:#10b981}.rem-low{color:#f59e0b}.rem-out{color:#ef4444;font-weight:600}
-  table.stock .cap{color:#5b616b}
-  .status{font-size:12px;color:#9aa0a6;margin-left:6px}
+  .rem-ok{color:#10b981}.rem-low{color:#f59e0b}.rem-out{color:#ef4444;font-weight:600}table.stock .cap{color:#5b616b}
   .note{color:#6b7280;font-size:12px}
-  .tabs{display:flex;gap:4px;margin:10px 0 16px;border-bottom:1px solid #232733}
+  .tabs{display:flex;gap:4px;margin:8px 0 16px;border-bottom:1px solid #232733}
   .tabs button{border-radius:8px 8px 0 0;padding:11px 18px;color:#9aa0a6;font-size:14px}
   .tabs button.active{color:#fff;border-bottom:2px solid #2563eb}
   .tab{display:none}.tab.show{display:block}
-  @media(max-width:560px){body{padding:14px}.tabs button{padding:11px 12px;flex:1}.wrap{height:48vh}}
+  @media(max-width:560px){body{padding:14px}.tabs button{padding:11px 10px;flex:1}.wrap{height:46vh}}
 </style></head><body>
 <h1>Pārdošanas panelis</h1>
 <div class="sub" id="sub">Ielādē…</div>
 
 <div class="bar">
-  <input id="token" type="password" placeholder="Authorization tokens (ja vajag)" style="display:none">
   <button class="refresh" id="refresh">↻ Atjaunot datus<span class="spinner" id="spin"></span></button>
+  <span class="lastref" id="lastref"></span>
   <span class="status" id="status"></span>
 </div>
+<div class="rlog" id="refreshlog"></div>
 
 <div class="tabs">
   <button data-tab="t-sales" class="active">📈 Pārdošana</button>
@@ -276,19 +365,26 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <section id="t-sales" class="tab show">
-  <div class="bar">
+  <h2 style="font-size:16px;margin:0 0 10px" id="todayhead">Šodienas pārdošana</h2>
+  <div class="grid" id="today"></div>
+  <div class="bar" style="margin-top:20px">
     <div class="group"><button id="m-rev" class="active">Apgrozījums (€)</button><button id="m-cnt">Pasūtījumi</button></div>
-    <div class="group"><button id="g-day">Dienas</button><button id="g-week" class="active">Nedēļas</button></div>
+    <div class="group"><button id="g-day" class="active">Dienas</button><button id="g-week">Nedēļas</button></div>
+    <select id="rangesel">
+      <option value="7">Pēdējā nedēļa</option>
+      <option value="14">2 nedēļas</option>
+      <option value="21" selected>3 nedēļas</option>
+      <option value="30">30 dienas</option>
+      <option value="9999">Viss periods</option>
+    </select>
   </div>
   <div class="card"><div class="wrap"><canvas id="chart"></canvas></div></div>
-  <h2 style="font-size:16px;margin:18px 0 10px" id="todayhead">Šodienas pārdošana</h2>
-  <div class="grid" id="today"></div>
 </section>
 
 <section id="t-day" class="tab">
   <div class="bar">
     <select id="hourdate"></select>
-    <div class="group"><button id="h-cnt" class="active">Pasūtījumi</button><button id="h-rev">Apgrozījums (€)</button></div>
+    <div class="group"><button id="h-cnt">Pasūtījumi</button><button id="h-rev" class="active">Apgrozījums (€)</button></div>
     <span class="status" id="hourtot"></span>
   </div>
   <div class="card"><div class="wrap" style="height:34vh;min-height:240px"><canvas id="hourchart"></canvas></div></div>
@@ -301,84 +397,48 @@ PAGE = r"""<!DOCTYPE html>
 
 <script>
 const COLORS=["#3b82f6","#ef4444","#10b981","#f59e0b","#a855f7"];
-let DATA=null, metric="rev", gran="week", chart=null;
+const $=id=>document.getElementById(id);
+let DATA=null, metric="rev", gran="day", rangeDays=21, chart=null;
+let HOURLY=null, hmetric="rev", hourChart=null;
+let refreshing=false, autoTried=false;
+const TOUCH_EVENTS=["mousemove","mouseout","click"];   // ignore touchmove so scrolling doesn't pop tooltips
 
 async function load(){
-  try{
-    DATA=await (await fetch("/api/data")).json();
-  }catch(e){document.getElementById("sub").textContent="Kļūda ielādējot datus: "+e;return;}
-  if(DATA.empty){document.getElementById("sub").textContent="Nav datu — nospied “Atjaunot datus”.";return;}
-  document.getElementById("sub").textContent=
-    `Periods: ${DATA.range[0]} — ${DATA.range[1]}  ·  ${DATA.series.length} automāti  ·  kopā €${DATA.total_revenue.toLocaleString("lv-LV")}`;
-  renderToday();
-  try{ draw(); }
-  catch(e){ document.getElementById("sub").textContent+="  (grafiks nav pieejams — pārbaudi interneta savienojumu)"; }
+  try{ DATA=await (await fetch("/api/data")).json(); }
+  catch(e){ $("sub").textContent="Kļūda ielādējot datus: "+e; return; }
+  updateRefreshUI();
+  if(DATA.empty){ $("sub").textContent="Nav datu — nospied “Atjaunot datus”."; maybeAuto(); return; }
+  $("sub").textContent=`Periods: ${DATA.range[0]} — ${DATA.range[1]}  ·  ${DATA.series.length} automāti  ·  kopā €${DATA.total_revenue.toLocaleString("lv-LV")}`;
+  renderToday(); try{ draw(); }catch(e){}
+  maybeAuto();
 }
-let HOURLY=null, hmetric="cnt", hourChart=null;
-async function loadHourly(){
-  try{ HOURLY=await (await fetch("/api/hourly")).json(); }catch(e){ return; }
-  const sel=document.getElementById("hourdate");
-  if(!HOURLY.dates.length){return;}
-  const keep=sel.value;
-  sel.innerHTML=HOURLY.dates.map(d=>`<option>${d}</option>`).join("");
-  sel.value=(keep&&HOURLY.dates.includes(keep))?keep:HOURLY.dates[HOURLY.dates.length-1];
-  drawHourly();
+function maybeAuto(){ if(DATA && DATA.stale && !autoTried && !refreshing){ autoTried=true; startRefresh(); } }
+
+function activeData(){
+  const n=Math.min(rangeDays, DATA.dates.length), start=Math.max(0,DATA.dates.length-n);
+  return {dates:DATA.dates.slice(start),
+          series:DATA.series.map(s=>({label:s.label, rev:s.rev.slice(start), cnt:s.cnt.slice(start)}))};
 }
-function drawHourly(){
-  const d=document.getElementById("hourdate").value;
-  const series=(hmetric==="rev"?HOURLY.revenue:HOURLY.orders)[d]||[];
-  const labels=Array.from({length:24},(_,h)=>String(h).padStart(2,"0"));
-  const total=series.reduce((a,b)=>a+b,0);
-  document.getElementById("hourtot").textContent=
-    hmetric==="rev"?`Kopā €${total.toLocaleString("lv-LV",{minimumFractionDigits:2,maximumFractionDigits:2})}`:`Kopā ${total} pas.`;
-  const cfg={labels,datasets:[{label:hmetric==="rev"?"€/stundā":"Pasūtījumi",data:series,
-    backgroundColor:"#3b82f6",borderRadius:4}]};
-  if(hourChart){hourChart.data=cfg;hourChart.update();return;}
-  hourChart=new Chart(document.getElementById("hourchart"),{type:"bar",data:cfg,options:{
-    responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},
-      tooltip:{callbacks:{label:c=>hmetric==="rev"?"€"+c.parsed.y:c.parsed.y+" pas."}}},
-    scales:{x:{ticks:{color:"#9aa0a6"},grid:{display:false}},
-      y:{ticks:{color:"#9aa0a6",callback:v=>hmetric==="rev"?"€"+v:v},grid:{color:"#1f2430"},beginAtZero:true}}}});
-}
-async function loadStock(){
-  const el=document.getElementById("stock");
-  el.innerHTML="<p class='note'>Ielādē atlikumu…</p>";
-  let s;
-  try{ s=await (await fetch("/api/stock")).json(); }
-  catch(e){ el.innerHTML="<p class='note'>Kļūda: "+e+"</p>"; return; }
-  if(s.error){ el.innerHTML="<p class='note'>Kļūda: "+s.error+"</p>"; return; }
-  el.innerHTML="";
-  s.machines.forEach((m,i)=>{
-    const rows=m.products.map(p=>{
-      const pct=p.capacity?p.remaining/p.capacity:1;
-      const cls=p.remaining===0?"rem-out":(pct<=0.25?"rem-low":"rem-ok");
-      return `<tr><td>${p.name}</td><td>${p.sold7}</td><td class="${cls}">${p.remaining}</td><td class="cap">${p.capacity}</td></tr>`;
-    }).join("");
-    el.insertAdjacentHTML("beforeend",
-      `<div class="mcard"><h3 style="color:${COLORS[i%5]}">${m.label}</h3>
-       <table class="stock"><thead><tr><th>Produkts</th><th>Pārd. 7d</th><th>Atlikums</th><th class="cap">Ietilp.</th></tr></thead>
-       <tbody>${rows}</tbody></table></div>`);
-  });
-}
-function weekly(){
+function weekly(dates){
   const labels=[],bucket=[];let cur=null;
-  DATA.dates.forEach(d=>{const dt=new Date(d+"T00:00:00");const wd=(dt.getDay()+6)%7;
+  dates.forEach(d=>{const dt=new Date(d+"T00:00:00");const wd=(dt.getDay()+6)%7;
     const mon=new Date(dt);mon.setDate(dt.getDate()-wd);const k=mon.toISOString().slice(0,10);
     if(k!==cur){cur=k;labels.push(k);}bucket.push(labels.length-1);});
   return{labels,bucket};
 }
 function view(){
-  if(gran==="day")return{labels:DATA.dates,series:DATA.series.map(s=>s[metric].slice())};
-  const{labels,bucket}=weekly();
-  return{labels,series:DATA.series.map(s=>{const v=Array(labels.length).fill(0);
-    s[metric].forEach((x,i)=>v[bucket[i]]+=x);return v.map(x=>Math.round(x*100)/100);})};
+  const ad=activeData();
+  if(gran==="day")return{labels:ad.dates,series:ad.series.map(s=>s[metric].slice()),labelsFor:ad.series.map(s=>s.label)};
+  const{labels,bucket}=weekly(ad.dates);
+  return{labels,series:ad.series.map(s=>{const v=Array(labels.length).fill(0);
+    s[metric].forEach((x,i)=>v[bucket[i]]+=x);return v.map(x=>Math.round(x*100)/100);}),labelsFor:ad.series.map(s=>s.label)};
 }
 const fmt=v=>metric==="rev"?"€"+v.toLocaleString("lv-LV",{minimumFractionDigits:2,maximumFractionDigits:2}):v+" pas.";
 function sets(){
   const vw=view();
-  const m=DATA.series.map((s,i)=>({label:s.label,data:vw.series[i],borderColor:COLORS[i%5],
+  const m=vw.series.map((arr,i)=>({label:vw.labelsFor[i],data:arr,borderColor:COLORS[i%5],
     backgroundColor:COLORS[i%5]+"22",borderWidth:2,tension:.3,pointRadius:gran==="week"?3:0,pointHoverRadius:5,fill:false}));
-  const tot=vw.labels.map((_,j)=>Math.round(DATA.series.reduce((a,s,i)=>a+vw.series[i][j],0)*100)/100);
+  const tot=vw.labels.map((_,j)=>Math.round(vw.series.reduce((a,arr)=>a+arr[j],0)*100)/100);
   m.unshift({label:"Kopā",data:tot,borderColor:"#e8eaed",borderDash:[6,4],borderWidth:3,tension:.3,
     pointRadius:gran==="week"?3:0,pointHoverRadius:5,fill:false});
   return{labels:vw.labels,datasets:m};
@@ -386,99 +446,132 @@ function sets(){
 function draw(){
   const d=sets();
   if(chart){chart.data.labels=d.labels;chart.data.datasets=d.datasets;chart.update();return;}
-  chart=new Chart(document.getElementById("chart"),{type:"line",data:d,options:{
-    responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},
+  chart=new Chart($("chart"),{type:"line",data:d,options:{
+    responsive:true,maintainAspectRatio:false,events:TOUCH_EVENTS,interaction:{mode:"index",intersect:false},
     plugins:{legend:{labels:{color:"#e8eaed",usePointStyle:true}},
       tooltip:{callbacks:{label:c=>c.dataset.label+": "+fmt(c.parsed.y)}}},
     scales:{x:{ticks:{color:"#9aa0a6",maxTicksLimit:14,maxRotation:0},grid:{color:"#1f2430"}},
       y:{ticks:{color:"#9aa0a6",callback:v=>metric==="rev"?"€"+v:v},grid:{color:"#1f2430"},beginAtZero:true}}}});
 }
 function renderToday(){
-  const t=DATA.today; document.getElementById("todayhead").textContent="Pārdošana "+(t.date||"");
-  const el=document.getElementById("today"); el.innerHTML="";
+  const t=DATA.today; $("todayhead").textContent="Pārdošana "+(t.date||"");
+  const el=$("today"); el.innerHTML="";
   if(!t.machines.length){el.innerHTML="<p class='note'>Šajā dienā vēl nav pārdošanas.</p>";return;}
   t.machines.forEach((m,i)=>{
+    const c=COLORS[i%5];
     const rows=m.products.map(p=>`<div class="row"><span>${p.name}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("");
     el.insertAdjacentHTML("beforeend",
-      `<div class="mcard"><h3 style="color:${COLORS[i%5]}">${m.label}</h3>
-       <div class="tot">${m.qty} gab. · €${m.rev.toFixed(2)}</div>${rows}</div>`);
+      `<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${m.label}</h3>
+       <div class="tot" style="color:${c}">${m.qty} gab. · €${m.rev.toFixed(2)}</div>${rows}</div>`);
   });
 }
-function setA(on,off){document.getElementById(on).classList.add("active");document.getElementById(off).classList.remove("active");}
-const $=id=>document.getElementById(id);
+
+async function loadHourly(){
+  try{ HOURLY=await (await fetch("/api/hourly")).json(); }catch(e){ return; }
+  const sel=$("hourdate"); if(!HOURLY.dates.length)return;
+  const keep=sel.value;
+  sel.innerHTML=HOURLY.dates.map(d=>`<option>${d}</option>`).join("");
+  sel.value=(keep&&HOURLY.dates.includes(keep))?keep:HOURLY.dates[HOURLY.dates.length-1];
+  drawHourly();
+}
+function drawHourly(){
+  if(!HOURLY||!HOURLY.dates.length)return;
+  const d=$("hourdate").value;
+  const series=(hmetric==="rev"?HOURLY.revenue:HOURLY.orders)[d]||[];
+  const labels=Array.from({length:24},(_,h)=>String(h).padStart(2,"0"));
+  const total=series.reduce((a,b)=>a+b,0);
+  $("hourtot").textContent=hmetric==="rev"?`Kopā €${total.toLocaleString("lv-LV",{minimumFractionDigits:2,maximumFractionDigits:2})}`:`Kopā ${total} pas.`;
+  const cfg={labels,datasets:[{data:series,backgroundColor:"#3b82f6",borderRadius:4}]};
+  if(hourChart){hourChart.data=cfg;hourChart.update();return;}
+  hourChart=new Chart($("hourchart"),{type:"bar",data:cfg,options:{responsive:true,maintainAspectRatio:false,events:TOUCH_EVENTS,
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>hmetric==="rev"?"€"+c.parsed.y:c.parsed.y+" pas."}}},
+    scales:{x:{ticks:{color:"#9aa0a6"},grid:{display:false}},
+      y:{ticks:{color:"#9aa0a6",callback:v=>hmetric==="rev"?"€"+v:v},grid:{color:"#1f2430"},beginAtZero:true}}}});
+}
+
+async function loadStock(){
+  const el=$("stock");
+  let s; try{ s=await (await fetch("/api/stock")).json(); }catch(e){ el.innerHTML="<p class='note'>Kļūda: "+e+"</p>"; return; }
+  if(!s.machines||!s.machines.length){ el.innerHTML="<p class='note'>Nav atlikuma datu — atjauno datus.</p>"; return; }
+  el.innerHTML="";
+  s.machines.forEach((m,i)=>{
+    const c=COLORS[i%5];
+    const rows=m.products.map(p=>{const pct=p.capacity?p.remaining/p.capacity:1;
+      const cls=p.remaining===0?"rem-out":(pct<=0.25?"rem-low":"rem-ok");
+      return `<tr><td>${p.name}</td><td>${p.sold7}</td><td class="${cls}">${p.remaining}</td><td class="cap">${p.capacity}</td></tr>`;}).join("");
+    el.insertAdjacentHTML("beforeend",
+      `<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${m.label}</h3>
+       <table class="stock"><thead><tr><th>Produkts</th><th>Pārd. 7d</th><th>Atlikums</th><th class="cap">Ietilp.</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  });
+}
+
+function agoText(iso){
+  if(!iso) return "nav atjaunots";
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(s<60) return "tikko atjaunots";
+  if(s<3600) return "atjaunots pirms "+Math.floor(s/60)+" min";
+  return "atjaunots pirms "+Math.floor(s/3600)+" h";
+}
+function updateRefreshUI(){
+  const iso=DATA&&DATA.last_refresh;
+  $("lastref").textContent=agoText(iso);
+  if(refreshing) return;
+  const s=iso?(Date.now()-new Date(iso).getTime())/1000:Infinity;
+  const btn=$("refresh");
+  if(s<300){ btn.disabled=true; btn.title="Pieejams pēc "+Math.ceil((300-s)/60)+" min"; }
+  else { btn.disabled=false; btn.title=""; }
+}
+
+function startRefresh(){
+  if(refreshing) return;
+  refreshing=true;
+  const btn=$("refresh"), spin=$("spin"), st=$("status"), rlog=$("refreshlog");
+  btn.disabled=true; spin.classList.add("on"); st.textContent=""; rlog.style.display="block"; rlog.innerHTML="";
+  let finished=false;
+  const es=new EventSource("/api/refresh-stream");
+  const addrl=t=>{const div=document.createElement("div");div.textContent=t;rlog.appendChild(div);};
+  const finish=async()=>{ es.close(); refreshing=false; spin.classList.remove("on");
+    await load(); await loadHourly(); await loadStock(); };
+  es.onmessage=async(ev)=>{
+    const d=JSON.parse(ev.data);
+    if(d.error){ finished=true; addrl("✗ "+d.error); st.textContent="✗ "+d.error; await finish(); return; }
+    if(d.done){ finished=true; if(d.msg){addrl(d.msg); st.textContent=d.msg;} await finish(); return; }
+    addrl(d.msg); st.textContent=d.msg;
+  };
+  es.onerror=async()=>{ if(!finished){ st.textContent="✗ Savienojuma kļūda"; } await finish(); };
+}
+
+function setA(on,off){$(on).classList.add("active");$(off).classList.remove("active");}
 $("m-rev").onclick=()=>{metric="rev";setA("m-rev","m-cnt");draw();};
 $("m-cnt").onclick=()=>{metric="cnt";setA("m-cnt","m-rev");draw();};
 $("g-day").onclick=()=>{gran="day";setA("g-day","g-week");draw();};
 $("g-week").onclick=()=>{gran="week";setA("g-week","g-day");draw();};
+$("rangesel").onchange=e=>{rangeDays=parseInt(e.target.value);draw();};
 $("hourdate").onchange=drawHourly;
 $("h-cnt").onclick=()=>{hmetric="cnt";setA("h-cnt","h-rev");drawHourly();};
 $("h-rev").onclick=()=>{hmetric="rev";setA("h-rev","h-cnt");drawHourly();};
-
-document.getElementById("refresh").onclick=async()=>{
-  const btn=document.getElementById("refresh"), spin=document.getElementById("spin");
-  const st=document.getElementById("status");
-  btn.disabled=true; spin.classList.add("on"); st.textContent="Atjauno…";
-  const token=document.getElementById("token").value;
-  try{
-    const r=await (await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({token})})).json();
-    if(r.ok){const s=r.summary; st.textContent=`✓ ${s.new_orders} jauni · €${s.shipped_revenue} · līdz ${s.fetched_through}`;
-      document.getElementById("token").value=""; await load(); await loadHourly(); await loadStock();}
-    else{st.textContent="✗ "+r.error;}
-  }catch(e){st.textContent="✗ "+e;}
-  finally{ btn.disabled=false; spin.classList.remove("on"); }
-};
-fetch("/api/has-auth").then(r=>r.json()).then(j=>{
-  // show the manual token box only if there's no stored login at all
-  if(!j.autoLogin && !j.hasToken)document.getElementById("token").style.display="";
-  if(j.autoLogin)document.getElementById("status").textContent="Automātiska pieslēgšanās ✓";});
+$("refresh").onclick=startRefresh;
 function showTab(id){
   document.querySelectorAll(".tab").forEach(s=>s.classList.toggle("show",s.id===id));
   document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("active",b.dataset.tab===id));
-  if(id==="t-sales"&&chart)chart.resize();      // charts mis-size if drawn while hidden
+  if(id==="t-sales"&&chart)chart.resize();
   if(id==="t-day"&&hourChart)hourChart.resize();
 }
 document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 
-load();
-loadHourly();
-loadStock();
+setInterval(updateRefreshUI,30000);   // keep "x min ago" fresh and re-enable button at 5 min
+load(); loadHourly(); loadStock();
 </script></body></html>"""
 
 
-class DualStackServer(ThreadingHTTPServer):
-    """Listen on both IPv4 and IPv6 so 'localhost' works no matter how it resolves."""
-    address_family = socket.AF_INET6
-
-    def server_bind(self):
-        try:
-            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        except (AttributeError, OSError):
-            pass
-        super().server_bind()
-
-    def handle_error(self, request, client_address):
-        # Stay quiet on benign client disconnects (broken pipe / reset); these
-        # otherwise dump a full traceback per dropped connection.
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
-            return
-        print("request error:", exc)
-
-
 def _startup_refresh():
-    """Optional: pull fresh data once on startup (set AUTO_REFRESH=1). Best-effort,
-    silent on success; only logs if it fails."""
-    try:
-        api_client.run_fetch(log=lambda m: None)
-    except Exception as e:
-        print("startup refresh failed:", e)
+    perform_refresh(force=True)
 
 
 if __name__ == "__main__":
     os.chdir(HERE)
+    _load_state()
     import auth
-    # one concise startup line; per-request logging is already disabled (log_message)
     print(f"dashboard on :{PORT} | auth={'on' if DASH_PASSWORD else 'off'} | "
           f"creds={'yes' if auth.have_creds() else 'no'}", flush=True)
     if os.environ.get("AUTO_REFRESH") == "1" and auth.have_creds():
