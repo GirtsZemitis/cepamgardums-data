@@ -49,6 +49,19 @@ def save_creds(account, password=None, inner=None):
 
 
 def load_creds():
+    """Credentials from env vars (for cloud/Container Apps) or the local file.
+
+    Env (preferred for deployment): XYNET_ACCOUNT + either XYNET_INNER (the
+    md5(account+password) hash) or XYNET_PASSWORD (plaintext). Falls back to
+    the git-ignored .creds.json written by `auth.py --set-creds`.
+    """
+    acc = os.environ.get("XYNET_ACCOUNT")
+    inner = os.environ.get("XYNET_INNER")
+    pw = os.environ.get("XYNET_PASSWORD")
+    if acc and inner:
+        return {"account": acc, "inner": inner}
+    if acc and pw:
+        return {"account": acc, "inner": make_inner(acc, pw)}
     if os.path.exists(CREDS):
         with open(CREDS) as f:
             return json.load(f)
@@ -56,7 +69,7 @@ def load_creds():
 
 
 def have_creds():
-    return os.path.exists(CREDS)
+    return load_creds() is not None
 
 
 def _post(path, body):

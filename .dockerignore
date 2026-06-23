@@ -1,0 +1,10 @@
+.git
+.gitignore
+.creds.json
+.token
+__pycache__/
+*.pyc
+.DS_Store
+.venv*/
+sales-report.html
+machine-sales.html

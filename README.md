@@ -28,6 +28,30 @@ A local web app with the chart + today's per-machine/product sales + a Refresh b
   row with total / sold-since-refill / remaining (low stock highlighted). Pulled live from
   the inventory API (`inventoryOfMachineGoods`); not cached.
 
+## Deploy to Azure Container Apps
+The repo includes a `Dockerfile` (runtime is pure Python stdlib — no pip deps). In Azure,
+create a Container App from this repo and let it build the Dockerfile. Set ingress
+**targetPort = 8000** (matches the Dockerfile's `EXPOSE`/`PORT`).
+
+Environment variables to set in Azure:
+
+| Var | Purpose | Example |
+|---|---|---|
+| `XYNET_ACCOUNT` | login account (phone) | `37128660597` |
+| `XYNET_INNER` | `md5(account+password)` — enables Refresh without storing the plaintext password | *(see below)* |
+| `XYNET_PASSWORD` | plaintext password — alternative to `XYNET_INNER` | |
+| `DASH_PASSWORD` | **password-protect the dashboard** (set this — the URL is public!) | `choose-a-strong-one` |
+| `DASH_USER` | dashboard username (optional, default `admin`) | `girts` |
+| `AUTO_REFRESH` | `1` = pull fresh data on startup | `1` |
+| `PORT` | listen port (default 8000; keep in sync with targetPort) | `8000` |
+
+Notes:
+- The committed `orders.db`/`api_cache.json` give the container data immediately; with
+  `AUTO_REFRESH=1` it pulls fresh data on boot. Refreshes are **not persisted** across
+  container restarts (ephemeral FS) — it falls back to the committed snapshot, then re-fetches.
+- **Always set `DASH_PASSWORD`** for a public deployment, or anyone with the URL sees your
+  data and can trigger refreshes.
+
 ## Auth (automatic)
 `auth.py` logs in for you and refreshes the token automatically (incl. mid-fetch if it
 expires). Credentials are stored once as account + a hash in git-ignored `.creds.json`

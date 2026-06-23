@@ -11,11 +11,13 @@ it's saved to a local, git-ignored .token file so you don't re-paste each time).
 
 Pure standard library — no web framework needed.
 """
+import base64
 import datetime
 import json
 import os
 import socket
 import sqlite3
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import api_client  # run_fetch(), same folder
@@ -23,7 +25,10 @@ import api_client  # run_fetch(), same folder
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(HERE, "orders.db")
 TOKEN_FILE = os.path.join(HERE, ".token")
-PORT = 8765
+PORT = int(os.environ.get("PORT", "8765"))      # Azure/Container Apps: set targetPort to match
+# Optional password gate (recommended when deployed publicly): set DASH_PASSWORD.
+DASH_USER = os.environ.get("DASH_USER", "admin")
+DASH_PASSWORD = os.environ.get("DASH_PASSWORD")
 
 
 # ----------------------------- data assembly --------------------------------
@@ -152,7 +157,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass  # quiet
 
+    def _authed(self):
+        """If DASH_PASSWORD is set, require HTTP Basic auth. Otherwise open."""
+        if not DASH_PASSWORD:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr.startswith("Basic "):
+            try:
+                u, p = base64.b64decode(hdr[6:]).decode().split(":", 1)
+                if u == DASH_USER and p == DASH_PASSWORD:
+                    return True
+            except Exception:
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Galas Nams"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_GET(self):
+        if not self._authed():
+            return
         if self.path == "/" or self.path.startswith("/index"):
             self._send(PAGE, "text/html")
         elif self.path == "/api/data":
@@ -172,6 +197,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found"}, code=404)
 
     def do_POST(self):
+        if not self._authed():
+            return
         if self.path != "/api/refresh":
             return self._send({"error": "not found"}, code=404)
         import auth
@@ -430,7 +457,21 @@ class DualStackServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+def _startup_refresh():
+    """Optional: pull fresh data once on startup (set AUTO_REFRESH=1). Best-effort."""
+    try:
+        api_client.run_fetch(log=lambda m: None)
+        print("Startup refresh: done")
+    except Exception as e:
+        print("Startup refresh skipped:", e)
+
+
 if __name__ == "__main__":
     os.chdir(HERE)
+    import auth
     print(f"Sales dashboard → http://localhost:{PORT}   (Ctrl+C to stop)")
+    print(f"  auth gate: {'ON (DASH_PASSWORD set)' if DASH_PASSWORD else 'OFF (open — set DASH_PASSWORD to protect)'}")
+    print(f"  auto-login creds: {'yes' if auth.have_creds() else 'no'}")
+    if os.environ.get("AUTO_REFRESH") == "1" and auth.have_creds():
+        threading.Thread(target=_startup_refresh, daemon=True).start()
     DualStackServer(("::", PORT), Handler).serve_forever()
