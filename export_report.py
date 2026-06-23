@@ -27,11 +27,13 @@ def build(out):
         stock = app.compute_stock()
     except Exception as e:
         stock = {"machines": [], "error": str(e)}
+    days = {d: app.read_day(d) for d in data.get("dates", [])}   # per-day breakdown, baked in
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     html = (TEMPLATE
             .replace("/*DATA*/null", json.dumps(data, ensure_ascii=False))
             .replace("/*HOURLY*/null", json.dumps(hourly, ensure_ascii=False))
             .replace("/*STOCK*/null", json.dumps(stock, ensure_ascii=False))
+            .replace("/*DAYS*/null", json.dumps(days, ensure_ascii=False))
             .replace("__STAMP__", stamp))
     with open(out, "w") as f:
         f.write(html)
@@ -68,6 +70,11 @@ TEMPLATE = r"""<!DOCTYPE html>
   table.stock td:first-child{text-align:left}
   .rem-ok{color:#10b981}.rem-low{color:#f59e0b}.rem-out{color:#ef4444;font-weight:600}table.stock .cap{color:#5b616b}
   .status{font-size:12px;color:#9aa0a6}.note{color:#6b7280;font-size:12px}
+  .daynav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .daynav button{background:#11141a;border:1px solid #232733;color:#e8eaed;border-radius:10px;padding:9px 15px;font-size:16px;min-width:46px}
+  .daynav button:disabled{opacity:.35}
+  #daylabel{font-size:15px;font-weight:600;min-width:120px;text-align:center}
+  #dtoday{margin-left:auto;font-size:13px}
   .hero{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
   .hcard{flex:1 1 150px;min-width:140px;background:#171a21;border:1px solid #232733;border-top:3px solid;border-radius:14px;padding:14px 16px}
   .hlabel{font-size:13px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -91,9 +98,16 @@ TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <section id="t-sales" class="tab show">
-  <h2 style="font-size:16px;margin:0 0 12px" id="herohead">Šodien</h2>
+  <div class="daynav">
+    <button id="dprev" title="Iepriekšējā diena">◀</button>
+    <span id="daylabel"></span>
+    <button id="dnext" title="Nākamā diena">▶</button>
+    <button id="dtoday">Šodien</button>
+  </div>
   <div class="hero" id="hero"></div>
-  <div class="bar">
+  <h2 style="font-size:14px;margin:4px 0 10px;color:#9aa0a6" id="todayhead">Pārdots pa produktiem</h2>
+  <div class="grid" id="today"></div>
+  <div class="bar" style="margin-top:20px">
     <div class="group"><button id="m-rev" class="active">Apgrozījums (€)</button><button id="m-cnt">Pasūtījumi</button></div>
     <div class="group"><button id="g-day" class="active">Dienas</button><button id="g-week">Nedēļas</button></div>
     <select id="rangesel">
@@ -105,8 +119,6 @@ TEMPLATE = r"""<!DOCTYPE html>
     </select>
   </div>
   <div class="card"><div class="wrap"><canvas id="chart"></canvas></div></div>
-  <h2 style="font-size:15px;margin:6px 0 10px;color:#9aa0a6" id="todayhead">Šodien — detalizēti</h2>
-  <div class="grid" id="today"></div>
 </section>
 
 <section id="t-day" class="tab">
@@ -124,27 +136,46 @@ TEMPLATE = r"""<!DOCTYPE html>
 </section>
 
 <script>
-const DATA=/*DATA*/null, HOURLY=/*HOURLY*/null, STOCK=/*STOCK*/null;
+const DATA=/*DATA*/null, HOURLY=/*HOURLY*/null, STOCK=/*STOCK*/null, DAYS=/*DAYS*/null;
 const COLORS=["#3b82f6","#ef4444","#10b981","#f59e0b","#a855f7"];
 const $=id=>document.getElementById(id);
-let metric="rev", gran="day", rangeDays=21, chart=null, hmetric="rev", hourChart=null;
+let metric="rev", gran="day", rangeDays=21, chart=null, hmetric="rev", hourChart=null, dayIdx=0;
+const colorByLabel={};
 const TOUCH_EVENTS=["mousemove","mouseout","click"];
 
 function load(){
   if(!DATA||DATA.empty){$("sub").textContent="Nav datu.";return;}
   $("sub").textContent=`Periods: ${DATA.range[0]} — ${DATA.range[1]}  ·  ${DATA.series.length} automāti  ·  kopā €${DATA.total_revenue.toLocaleString("lv-LV")}`;
-  renderHero(); renderToday(); try{draw();}catch(e){}
+  setDay(DATA.dates.length-1); try{draw();}catch(e){}
 }
-function renderHero(){
+function renderHero(idx){
   const el=$("hero"); el.innerHTML="";
-  $("herohead").textContent="Šodien · "+(DATA.today.date||"");
-  const tmap={}; (DATA.today.machines||[]).forEach(m=>tmap[m.label]=m);
   DATA.series.forEach((s,i)=>{
-    const t=tmap[s.label]||{qty:0,rev:0}, c=COLORS[i%5];
+    const c=COLORS[i%5]; colorByLabel[s.label]=c;
+    const rev=s.rev[idx]||0, qty=s.cnt[idx]||0;
     el.insertAdjacentHTML("beforeend",
       `<div class="hcard" style="border-top-color:${c}"><div class="hlabel" style="color:${c}">${s.label}</div>
-       <div class="hbig">€${(t.rev||0).toFixed(2)}</div><div class="hsub">${t.qty||0} gab.</div></div>`);
+       <div class="hbig">€${rev.toFixed(2)}</div><div class="hsub">${qty} gab.</div></div>`);
   });
+}
+function renderDetail(idx){
+  const el=$("today"), dd=(DAYS[DATA.dates[idx]]||{machines:[]});
+  const dmap={}; dd.machines.forEach(m=>dmap[m.label]=m);
+  el.innerHTML="";
+  DATA.series.forEach((s,i)=>{                       // a card for EVERY machine, empty if 0 sold
+    const c=COLORS[i%5], m=dmap[s.label]||{qty:0,rev:0,products:[]};
+    const rows=m.products.length
+      ? m.products.map(p=>`<div class="row"><span>${p.name}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("")
+      : `<div class="row"><span class="q">— nav pārdošanas —</span></div>`;
+    el.insertAdjacentHTML("beforeend",`<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${s.label}</h3>
+      <div class="tot" style="color:${c}">${m.qty} gab. · €${m.rev.toFixed(2)}</div>${rows}</div>`);});
+}
+function setDay(idx){
+  const last=DATA.dates.length-1;
+  dayIdx=Math.max(0,Math.min(idx,last));
+  $("daylabel").textContent=DATA.dates[dayIdx]+(dayIdx===last?" · šodien":"");
+  $("dprev").disabled=dayIdx<=0; $("dnext").disabled=dayIdx>=last; $("dtoday").disabled=dayIdx===last;
+  renderHero(dayIdx); renderDetail(dayIdx);
 }
 function activeData(){
   const n=Math.min(rangeDays, DATA.dates.length), start=Math.max(0,DATA.dates.length-n);
@@ -167,13 +198,6 @@ function draw(){const d=sets();
   chart=new Chart($("chart"),{type:"line",data:d,options:{responsive:true,maintainAspectRatio:false,events:TOUCH_EVENTS,interaction:{mode:"index",intersect:false},
     plugins:{legend:{labels:{color:"#e8eaed",usePointStyle:true}},tooltip:{callbacks:{label:c=>c.dataset.label+": "+fmt(c.parsed.y)}}},
     scales:{x:{ticks:{color:"#9aa0a6",maxTicksLimit:14,maxRotation:0},grid:{color:"#1f2430"}},y:{ticks:{color:"#9aa0a6",callback:v=>metric==="rev"?"€"+v:v},grid:{color:"#1f2430"},beginAtZero:true}}}});}
-function renderToday(){const t=DATA.today;$("todayhead").textContent="Šodien — detalizēti ("+(t.date||"")+")";
-  const el=$("today");el.innerHTML="";
-  if(!t.machines.length){el.innerHTML="<p class='note'>Šajā dienā nav pārdošanas.</p>";return;}
-  t.machines.forEach((m,i)=>{const c=COLORS[i%5];
-    const rows=m.products.map(p=>`<div class="row"><span>${p.name}</span><span class="q">${p.qty} × · €${p.rev.toFixed(2)}</span></div>`).join("");
-    el.insertAdjacentHTML("beforeend",`<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${m.label}</h3><div class="tot" style="color:${c}">${m.qty} gab. · €${m.rev.toFixed(2)}</div>${rows}</div>`);});}
-
 function loadHourly(){const sel=$("hourdate");if(!HOURLY.dates.length)return;
   sel.innerHTML=HOURLY.dates.map(d=>`<option>${d}</option>`).join("");
   sel.value=HOURLY.dates[HOURLY.dates.length-1];drawHourly();}
@@ -204,6 +228,9 @@ $("m-cnt").onclick=()=>{metric="cnt";setA("m-cnt","m-rev");draw();};
 $("g-day").onclick=()=>{gran="day";setA("g-day","g-week");draw();};
 $("g-week").onclick=()=>{gran="week";setA("g-week","g-day");draw();};
 $("rangesel").onchange=e=>{rangeDays=parseInt(e.target.value);draw();};
+$("dprev").onclick=()=>setDay(dayIdx-1);
+$("dnext").onclick=()=>setDay(dayIdx+1);
+$("dtoday").onclick=()=>setDay(DATA.dates.length-1);
 $("hourdate").onchange=drawHourly;
 $("h-cnt").onclick=()=>{hmetric="cnt";setA("h-cnt","h-rev");drawHourly();};
 $("h-rev").onclick=()=>{hmetric="rev";setA("h-rev","h-cnt");drawHourly();};
