@@ -161,6 +161,17 @@ function renderDay(idx){
   const dd=(DAYS[DATA.dates[idx]]||{machines:[]});
   const dmap={}; dd.machines.forEach(m=>dmap[m.label]=m);
   const el=$("hero"); el.innerHTML="";
+  let tRev=0,tQty=0; const agg={};
+  dd.machines.forEach(m=>{ tRev+=m.rev||0; tQty+=m.qty||0;
+    (m.products||[]).forEach(p=>{ (agg[p.name]=agg[p.name]||{qty:0,rev:0}); agg[p.name].qty+=p.qty; agg[p.name].rev+=p.rev; }); });
+  const aggRows=Object.entries(agg).sort((a,b)=>b[1].qty-a[1].qty)
+    .map(([n,v])=>`<div class="row"><span>${shortName(n)}</span><span class="q">${v.qty} × · €${v.rev.toFixed(2)}</span></div>`).join("")
+    || `<div class="row"><span class="q">— nav pārdošanas —</span></div>`;
+  el.insertAdjacentHTML("beforeend",
+    `<div class="hcard" style="border-top-color:#e8eaed"><div class="hlabel" style="color:#e8eaed">Kopā</div>
+     <div class="hbig">€${tRev.toFixed(2)}</div>
+     <div class="hsub"><span>${tQty} gab.</span><span class="chev">▾</span></div>
+     <div class="hdetail">${aggRows}</div></div>`);
   DATA.series.forEach((s,i)=>{                        // a card per machine; tap to expand its products
     const c=COLORS[i%5], m=dmap[s.label]||{qty:0,rev:0,products:[]};
     const rows=m.products.length
