@@ -132,7 +132,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 </section>
 
 <section id="t-stock" class="tab">
-  <p class="note" id="stockhead">Atlikums = no automāta (momentuzņēmuma brīdī). “Pārd. 7d” = reāli pārdots pēdējās 7 dienās. “Ietilp.” = konfigurētā ietilpība (informatīvi).</p>
+  <p class="note" id="stockhead">Atlikums = no automāta (momentuzņēmuma brīdī). “Pārd. 7d” = reāli pārdots pēdējās 7 dienās.</p>
   <div class="grid" id="stock"></div>
 </section>
 
@@ -221,9 +221,9 @@ function renderStock(){const el=$("stock");
   el.innerHTML="";
   STOCK.machines.forEach((m,i)=>{const c=COLORS[i%5];
     const rows=m.products.map(p=>{const pct=p.capacity?p.remaining/p.capacity:1;const cls=p.remaining===0?"rem-out":(pct<=0.25?"rem-low":"rem-ok");
-      return `<tr><td>${p.name}</td><td>${p.sold7}</td><td class="${cls}">${p.remaining}</td><td class="cap">${p.capacity}</td></tr>`;}).join("");
+      return `<tr><td>${p.name}</td><td>${p.sold7}</td><td class="${cls}">${p.remaining}</td></tr>`;}).join("");
     el.insertAdjacentHTML("beforeend",`<div class="mcard" style="border-left-color:${c}"><h3 style="color:${c}">${m.label}</h3>
-      <table class="stock"><thead><tr><th>Produkts</th><th>Pārd. 7d</th><th>Atlikums</th><th class="cap">Ietilp.</th></tr></thead><tbody>${rows}</tbody></table></div>`);});}
+      <table class="stock"><thead><tr><th>Produkts</th><th>Pārd. 7d</th><th>Atlikums</th></tr></thead><tbody>${rows}</tbody></table></div>`);});}
 
 function setA(on,off){$(on).classList.add("active");$(off).classList.remove("active");}
 $("m-rev").onclick=()=>{metric="rev";setA("m-rev","m-cnt");draw();};
