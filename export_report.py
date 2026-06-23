@@ -108,7 +108,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   <h2 style="font-size:14px;margin:4px 0 10px;color:#9aa0a6" id="todayhead">Pārdots pa produktiem</h2>
   <div class="grid" id="today"></div>
   <div class="bar" style="margin-top:20px">
-    <div class="group"><button id="m-rev" class="active">Apgrozījums (€)</button><button id="m-cnt">Pasūtījumi</button></div>
+    <div class="group"><button id="m-rev" class="active">Ieņēmumi (€)</button><button id="m-cnt">Pasūtījumi</button></div>
     <div class="group"><button id="g-day" class="active">Dienas</button><button id="g-week">Nedēļas</button></div>
     <select id="rangesel">
       <option value="7">Pēdējā nedēļa</option>
@@ -124,7 +124,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 <section id="t-day" class="tab">
   <div class="bar">
     <select id="hourdate"></select>
-    <div class="group"><button id="h-cnt">Pasūtījumi</button><button id="h-rev" class="active">Apgrozījums (€)</button></div>
+    <div class="group"><button id="h-cnt">Pasūtījumi</button><button id="h-rev" class="active">Ieņēmumi (€)</button></div>
     <span class="status" id="hourtot"></span>
   </div>
   <div class="card"><div class="wrap" style="height:34vh;min-height:240px"><canvas id="hourchart"></canvas></div></div>
