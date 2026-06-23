@@ -81,9 +81,9 @@ TEMPLATE = r"""<!DOCTYPE html>
   .hlabel{font-size:13px;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hbig{font-size:30px;font-weight:800;letter-spacing:-1px;line-height:1}
   .hsub{font-size:12px;color:#9aa0a6;margin-top:4px;display:flex;justify-content:space-between;align-items:center}
-  .chev{transition:transform .15s;color:#cbd1d8;font-size:22px;line-height:1}.hcard.open .chev{transform:rotate(180deg)}
+  .chev{transition:transform .15s;color:#cbd1d8;font-size:32px;line-height:1}.hcard.open .chev{transform:rotate(180deg)}
   .hdetail{display:none;margin-top:10px;border-top:1px solid #232733;padding-top:6px}.hcard.open .hdetail{display:block}
-  @media(max-width:560px){.hbig{font-size:24px}.hcard{flex:1 1 140px;min-width:130px}}
+  @media(max-width:560px){.hbig{font-size:26px}.hcard{flex:1 1 100%}}
   .tabs{display:flex;gap:4px;margin:8px 0 16px;border-bottom:1px solid #232733}
   .tabs button{border-radius:8px 8px 0 0;padding:11px 18px;color:#9aa0a6;font-size:14px}
   .tabs button.active{color:#fff;border-bottom:2px solid #2563eb}
