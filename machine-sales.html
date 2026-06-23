@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gaļas Nams — pārdošana pa automātiem</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 24px; background:#0f1115; color:#e8eaed; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color:#9aa0a6; font-size:13px; margin-bottom:16px; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
+  .group { display:flex; gap:4px; background:#11141a; border:1px solid #232733; border-radius:10px; padding:4px; }
+  button { background:transparent; color:#cbd1d8; border:none; border-radius:7px;
+           padding:7px 13px; font-size:13px; cursor:pointer; }
+  button.active { background:#2563eb; color:#fff; }
+  .card { background:#171a21; border:1px solid #232733; border-radius:14px; padding:16px; }
+  .wrap { position:relative; height:60vh; min-height:360px; }
+  .kpis { display:flex; gap:12px; flex-wrap:wrap; margin:14px 0 0; }
+  .kpi { background:#171a21; border:1px solid #232733; border-radius:12px; padding:10px 14px; font-size:13px; }
+  .kpi b { display:block; font-size:18px; margin-top:2px; }
+  .note { color:#6b7280; font-size:12px; margin-top:14px; }
+</style>
+</head>
+<body>
+  <h1>Pārdošana pa automātiem</h1>
+  <div class="sub" id="rangelbl"></div>
+  <div class="controls">
+    <div class="group">
+      <button id="m-rev" class="active">Apgrozījums (€)</button>
+      <button id="m-cnt">Pasūtījumi</button>
+    </div>
+    <div class="group">
+      <button id="g-day">Dienas</button>
+      <button id="g-week" class="active">Nedēļas</button>
+    </div>
+  </div>
+  <div class="card"><div class="wrap"><canvas id="chart"></canvas></div></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="note">Tikai izsniegtie pasūtījumi. Nedēļas skats summē pirmdiena–svētdiena (mazina nedēļas nogales svārstības).</div>
+
+<script>
+const DATA = {"dates": ["2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-23", "2026-05-24", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31", "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06", "2026-06-07", "2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14", "2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19", "2026-06-20"], "series": [{"code": "2202000072", "label": "Autom\u0101ts 2202000072", "rev": [567.35, 559.86, 643.73, 92.86, 23.97, 26.48, 0, 47.96, 155.81, 275.69, 0, 0, 0, 23.97, 307.64, 342.6, 94.9, 0, 0, 0, 35.95, 212.76, 475.39, 213.77, 10.98, 35.95, 22.97, 23.98, 107.86, 313.17, 233.68, 23.97, 119.86, 46.94, 118.87, 130.85, 236.72, 366.52, 23.96, 22.96, 71.93, 22.96, 260.67, 234.67, 71.92, 35.96, 35.96, 47.93, 23.97, 201.76, 410.47], "cnt": [48, 48, 60, 8, 2, 3, 0, 4, 13, 23, 0, 0, 0, 2, 26, 29, 8, 0, 0, 0, 3, 18, 40, 18, 1, 3, 2, 2, 9, 27, 20, 2, 10, 4, 10, 11, 20, 31, 2, 2, 6, 2, 22, 20, 6, 3, 3, 4, 2, 17, 35]}, {"code": "2506000017", "label": "Autom\u0101ts 2506000017", "rev": [11.99, 59.95, 69.94, 0, 0, 0, 22.98, 11.99, 58.95, 46.96, 0, 0, 22.98, 0, 0, 0, 10.99, 0, 0, 0, 0, 22.98, 81.93, 81.93, 0, 0, 34.97, 0, 11.99, 58.95, 0, 35.97, 0, 23.98, 0, 22.98, 23.98, 94.92, 0, 0, 0, 0, 0, 0, 0, 35.97, 0, 0, 0, 69.94, 0], "cnt": [1, 5, 6, 0, 0, 0, 2, 1, 5, 4, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 2, 7, 7, 0, 0, 3, 0, 1, 5, 0, 3, 0, 2, 0, 2, 2, 8, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 6, 0]}, {"code": "2506000018", "label": "Autom\u0101ts 2506000018", "rev": [11.99, 11.99, 0, 0, 0, 0, 0, 0, 0, 11.99, 11.99, 0, 0, 0, 0, 22.98, 11.99, 0, 0, 0, 0, 0, 45.96, 0, 0, 0, 0, 0, 23.98, 22.98, 10.99, 0, 0, 35.97, 0, 0, 0, 35.97, 0, 0, 0, 0, 0, 11.99, 34.97, 0, 22.98, 0, 0, 0, 23.98], "cnt": [1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 2, 1, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 1, 3, 0, 2, 0, 0, 0, 2]}, {"code": "2512000367", "label": "Autom\u0101ts 2512000367", "rev": [130.89, 11.99, 35.97, 58.95, 0, 11.99, 0, 10.99, 23.98, 0, 23.98, 0, 0, 47.96, 47.96, 69.94, 46.96, 0, 0, 0, 0, 0, 11.99, 94.92, 0, 0, 0, 0, 11.99, 34.97, 22.98, 23.98, 0, 35.97, 0, 34.97, 47.96, 35.97, 0, 0, 0, 10.99, 47.96, 10.99, 58.95, 0, 0, 0, 10.99, 22.98, 105.91], "cnt": [11, 1, 3, 5, 0, 1, 0, 1, 2, 0, 2, 0, 0, 4, 4, 6, 4, 0, 0, 0, 0, 0, 1, 8, 0, 0, 0, 0, 1, 3, 2, 2, 0, 3, 0, 3, 4, 3, 0, 0, 0, 1, 4, 1, 5, 0, 0, 0, 1, 2, 9]}, {"code": "2512000368", "label": "Autom\u0101ts 2512000368", "rev": [494.58, 481.59, 198.83, 71.94, 22.98, 0, 23.98, 94.92, 235.8, 116.9, 22.98, 46.96, 0, 11.99, 176.85, 247.79, 126.89, 11.99, 0, 0, 0, 69.94, 272.77, 248.79, 10.99, 34.97, 0, 46.96, 11.99, 106.91, 106.91, 11.99, 35.97, 117.9, 11.99, 94.92, 93.92, 93.92, 0, 59.95, 22.98, 11.99, 71.94, 189.84, 57.95, 0, 0, 11.99, 45.96, 119.9, 266.77], "cnt": [42, 41, 17, 6, 2, 0, 2, 8, 20, 10, 2, 4, 0, 1, 15, 21, 11, 1, 0, 0, 0, 6, 23, 21, 1, 3, 0, 4, 1, 9, 9, 1, 3, 10, 1, 8, 8, 8, 0, 5, 2, 1, 6, 16, 5, 0, 0, 1, 4, 10, 23]}], "range": ["2026-05-01", "2026-06-20"]};
+const COLORS = ["#3b82f6","#ef4444","#10b981","#f59e0b","#a855f7"];
+let metric = "rev";   // rev | cnt
+let gran = "week";    // day | week
+
+document.getElementById("rangelbl").textContent =
+  "Periods: " + DATA.range[0] + " — " + DATA.range[1] + "  ·  " + DATA.series.length + " automāti";
+
+// Group daily values into ISO weeks (Monday start). Returns {labels, map: series->values}.
+function weekly() {
+  const labels = [], bucketOf = [];
+  let curKey = null, idxMap = [];
+  DATA.dates.forEach((d) => {
+    const dt = new Date(d + "T00:00:00");
+    const day = (dt.getDay() + 6) % 7;            // Mon=0..Sun=6
+    const monday = new Date(dt); monday.setDate(dt.getDate() - day);
+    const key = monday.toISOString().slice(0, 10);
+    if (key !== curKey) { curKey = key; labels.push(key); }
+    bucketOf.push(labels.length - 1);
+  });
+  return { labels, bucketOf };
+}
+
+function buildView() {
+  if (gran === "day") {
+    return { labels: DATA.dates, series: DATA.series.map(s => s[metric].slice()) };
+  }
+  const { labels, bucketOf } = weekly();
+  const series = DATA.series.map(s => {
+    const v = new Array(labels.length).fill(0);
+    s[metric].forEach((x, i) => { v[bucketOf[i]] += x; });
+    return v.map(x => Math.round(x * 100) / 100);
+  });
+  return { labels, series };
+}
+
+function datasets() {
+  const view = buildView();
+  const machineSets = DATA.series.map((s, i) => ({
+    label: s.label,
+    data: view.series[i],
+    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: COLORS[i % COLORS.length] + "22",
+    borderWidth: 2, tension: 0.3,
+    pointRadius: gran === "week" ? 3 : 0, pointHoverRadius: 5, fill: false,
+  }));
+  const totalData = view.labels.map((_, j) =>
+    Math.round(DATA.series.reduce((a, s, i) => a + view.series[i][j], 0) * 100) / 100);
+  const totalSet = {
+    label: "Kopā (visi automāti)",
+    data: totalData,
+    borderColor: "#e8eaed",
+    backgroundColor: "transparent",
+    borderWidth: 3, borderDash: [6, 4], tension: 0.3,
+    pointRadius: gran === "week" ? 3 : 0, pointHoverRadius: 5, fill: false,
+  };
+  return { labels: view.labels, datasets: [totalSet, ...machineSets] };
+}
+
+const fmt = v => metric === "rev"
+  ? "€" + v.toLocaleString("lv-LV", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  : v + " pas.";
+
+const init = datasets();
+const chart = new Chart(document.getElementById("chart"), {
+  type: "line",
+  data: init,
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { labels: { color: "#e8eaed", usePointStyle: true } },
+      tooltip: { callbacks: { label: c => c.dataset.label + ": " + fmt(c.parsed.y) } },
+    },
+    scales: {
+      x: { ticks: { color: "#9aa0a6", maxRotation: 0, autoSkip: true, maxTicksLimit: 14 }, grid: { color: "#1f2430" } },
+      y: { ticks: { color: "#9aa0a6", callback: v => metric === "rev" ? "€" + v : v }, grid: { color: "#1f2430" }, beginAtZero: true },
+    },
+  },
+});
+
+function refresh() {
+  const d = datasets();
+  chart.data.labels = d.labels;
+  chart.data.datasets = d.datasets;
+  chart.update();
+  renderKpis();
+}
+
+function renderKpis() {
+  const el = document.getElementById("kpis"); el.innerHTML = "";
+  const grand = DATA.series.reduce((a, s) => a + s[metric].reduce((x, y) => x + y, 0), 0);
+  const td = document.createElement("div"); td.className = "kpi";
+  td.style.borderColor = "#e8eaed";
+  td.innerHTML = "<span style='color:#e8eaed'>▦ </span>Kopā (visi automāti)" +
+    "<b>" + (metric === "rev" ? fmt(Math.round(grand * 100) / 100) : grand + " pas.") + "</b>";
+  el.appendChild(td);
+  DATA.series.forEach((s, i) => {
+    const total = s[metric].reduce((a, b) => a + b, 0);
+    const d = document.createElement("div"); d.className = "kpi";
+    d.innerHTML = "<span style='color:" + COLORS[i % COLORS.length] + "'>● </span>" + s.label +
+      "<b>" + (metric === "rev" ? fmt(Math.round(total * 100) / 100) : total + " pas.") + "</b>";
+    el.appendChild(d);
+  });
+}
+
+function setActive(on, off) { document.getElementById(on).classList.add("active"); document.getElementById(off).classList.remove("active"); }
+document.getElementById("m-rev").onclick = () => { metric = "rev"; setActive("m-rev", "m-cnt"); refresh(); };
+document.getElementById("m-cnt").onclick = () => { metric = "cnt"; setActive("m-cnt", "m-rev"); refresh(); };
+document.getElementById("g-day").onclick = () => { gran = "day"; setActive("g-day", "g-week"); refresh(); };
+document.getElementById("g-week").onclick = () => { gran = "week"; setActive("g-week", "g-day"); refresh(); };
+
+renderKpis();
+</script>
+</body>
+</html>

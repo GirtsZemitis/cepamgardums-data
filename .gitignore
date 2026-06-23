@@ -1,0 +1,8 @@
+# Secrets — NEVER commit these (login credentials / session token)
+.creds.json
+.token
+
+# Python / OS junk
+__pycache__/
+*.pyc
+.DS_Store
