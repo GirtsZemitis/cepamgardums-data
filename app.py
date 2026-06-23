@@ -17,6 +17,7 @@ import json
 import os
 import socket
 import sqlite3
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -456,22 +457,30 @@ class DualStackServer(ThreadingHTTPServer):
             pass
         super().server_bind()
 
+    def handle_error(self, request, client_address):
+        # Stay quiet on benign client disconnects (broken pipe / reset); these
+        # otherwise dump a full traceback per dropped connection.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        print("request error:", exc)
+
 
 def _startup_refresh():
-    """Optional: pull fresh data once on startup (set AUTO_REFRESH=1). Best-effort."""
+    """Optional: pull fresh data once on startup (set AUTO_REFRESH=1). Best-effort,
+    silent on success; only logs if it fails."""
     try:
         api_client.run_fetch(log=lambda m: None)
-        print("Startup refresh: done")
     except Exception as e:
-        print("Startup refresh skipped:", e)
+        print("startup refresh failed:", e)
 
 
 if __name__ == "__main__":
     os.chdir(HERE)
     import auth
-    print(f"Sales dashboard → http://localhost:{PORT}   (Ctrl+C to stop)")
-    print(f"  auth gate: {'ON (DASH_PASSWORD set)' if DASH_PASSWORD else 'OFF (open — set DASH_PASSWORD to protect)'}")
-    print(f"  auto-login creds: {'yes' if auth.have_creds() else 'no'}")
+    # one concise startup line; per-request logging is already disabled (log_message)
+    print(f"dashboard on :{PORT} | auth={'on' if DASH_PASSWORD else 'off'} | "
+          f"creds={'yes' if auth.have_creds() else 'no'}", flush=True)
     if os.environ.get("AUTO_REFRESH") == "1" and auth.have_creds():
         threading.Thread(target=_startup_refresh, daemon=True).start()
     DualStackServer(("::", PORT), Handler).serve_forever()
