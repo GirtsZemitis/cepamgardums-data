@@ -2,6 +2,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+# IANA tz database so ZoneInfo("Europe/Riga") works (Debian slim lacks it)
+RUN pip install --no-cache-dir tzdata
 COPY . /app
 
 # Listen on 80 (Azure Container Apps convention). app.py honors $PORT, so if the

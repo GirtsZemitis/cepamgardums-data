@@ -54,6 +54,16 @@ def _save_state():
         pass
 
 
+def local_today():
+    """Current date in Latvia (Europe/Riga), so the business 'today' is right
+    even though the server runs in UTC. Falls back to the system date."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo("Europe/Riga")).date()
+    except Exception:
+        return datetime.date.today()
+
+
 def _secs_since_refresh():
     if not STATE.get("last_refresh"):
         return None
@@ -114,7 +124,9 @@ def read_data():
     series, dates = [], []
     if dmin:
         d0 = datetime.date.fromisoformat(dmin)
-        d1 = datetime.date.fromisoformat(dmax)
+        # extend through the real current day (Riga time) so "today" always shows,
+        # with zeros until sales arrive
+        d1 = max(datetime.date.fromisoformat(dmax), local_today())
         dates = [(d0 + datetime.timedelta(days=i)).isoformat()
                  for i in range((d1 - d0).days + 1)]
         idx = {(r["order_date"], str(r["machine_code"])): r for r in drows}
