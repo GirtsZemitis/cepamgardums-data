@@ -42,10 +42,13 @@ PAGE_CAP = 60                  # safety: max pages per window
 REQ_DELAY = 1.3               # the API throttles rapid calls -> null; pace requests
 RETRIES = 4                   # retry a null/empty page this many times before giving up
 
-# Map vending-machine serials -> human location (fill in once known; see API dwmc field).
+# Map vending-machine serials -> human location (from Xynet jqmc field).
 MACHINE_LOCATIONS = {
-    "2202000072": "", "2506000017": "", "2506000018": "",
-    "2512000367": "", "2512000368": "",
+    "2202000072": "2202000072 Jelgava",
+    "2506000017": "2506000017 Spilve",
+    "2506000018": "2506000018 Rīga",
+    "2512000367": "2512000367 Jaunolaine",
+    "2512000368": "2512000368 Mārupe",
 }
 SHIP_STATUS = {"已出货": "Goods Shipped", "出货失败": "Shipment failed",
                "未出货": "Not shipped"}
