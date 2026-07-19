@@ -29,11 +29,11 @@ RAW_COLS = [
 # Optional: map vending-machine serials to human-readable locations once known.
 # Leave blank ("") for unknown; fill in as you confirm which machine sits where.
 MACHINE_LOCATIONS = {
-    "2202000072": "",
-    "2506000017": "",
-    "2506000018": "",
-    "2512000367": "",
-    "2512000368": "",
+    "2202000072": "2202000072 Jelgava",
+    "2506000017": "2506000017 Spilve",
+    "2506000018": "2506000018 Rīga",
+    "2512000367": "2512000367 Jaunolaine",
+    "2512000368": "2512000368 Mārupe",
 }
 
 
