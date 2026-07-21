@@ -9,3 +9,9 @@ __pycache__/
 
 # Server runtime state (cached stock + last-refresh time)
 state.json
+
+# Raw data files (only encrypted .enc versions are committed)
+orders.db
+orders.csv
+api_cache.json
+sales-report.html

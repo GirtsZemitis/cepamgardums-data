@@ -1,0 +1,103 @@
+name: Build report & deploy to GitHub Pages
+
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Decrypt cached data
+        env:
+          ENC_KEY: ${{ secrets.DASH_PASSWORD }}
+        run: |
+          for f in orders.db.enc orders.csv.enc api_cache.json.enc; do
+            if [ -f "$f" ]; then
+              gpg --batch --yes --passphrase "$ENC_KEY" -d "$f" > "${f%.enc}"
+              echo "Decrypted $f"
+            fi
+          done
+
+      - name: Fetch new data from Xynet
+        env:
+          XYNET_ACCOUNT: ${{ secrets.XYNET_ACCOUNT }}
+          XYNET_INNER: ${{ secrets.XYNET_INNER }}
+        run: |
+          python3 -c "
+          import auth, api_client
+
+          token = auth.login()
+          print('Logged in, fetching new orders...')
+
+          def log(m): print(m)
+          summary = api_client.run_fetch(token, log=log)
+          print('Done:', summary)
+          "
+
+      - name: Build static report
+        env:
+          XYNET_ACCOUNT: ${{ secrets.XYNET_ACCOUNT }}
+          XYNET_INNER: ${{ secrets.XYNET_INNER }}
+        run: |
+          python3 export_report.py --out sales-report.html
+          echo "Report: $(wc -c < sales-report.html) bytes"
+
+      - name: Encrypt with StatiCrypt
+        env:
+          DASH_PASSWORD: ${{ secrets.DASH_PASSWORD }}
+        run: |
+          npx staticrypt sales-report.html -p "$DASH_PASSWORD" \
+            --short \
+            --remember 30 \
+            --template-title "Gaļas Nams — pārskats" \
+            --template-instructions "Ievadi paroli, lai skatītu pārdošanas datus." \
+            -d _site
+          ls -la _site/
+
+      - name: Re-encrypt data & commit
+        env:
+          ENC_KEY: ${{ secrets.DASH_PASSWORD }}
+        run: |
+          for f in orders.db orders.csv api_cache.json; do
+            gpg --batch --yes --passphrase "$ENC_KEY" --symmetric --cipher-algo AES256 -o "$f.enc" "$f"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add orders.db.enc orders.csv.enc api_cache.json.enc
+          git diff --cached --quiet || git commit -m "data: update encrypted cache $(date -u +%Y-%m-%d\ %H:%M)"
+          git push
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
