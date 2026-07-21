@@ -78,6 +78,7 @@ jobs:
             --template-title "Gaļas Nams — pārskats" \
             --template-instructions "Ievadi paroli, lai skatītu pārdošanas datus." \
             -d _site
+          mv _site/sales-report.html _site/index.html
           ls -la _site/
 
       - name: Re-encrypt data & commit
